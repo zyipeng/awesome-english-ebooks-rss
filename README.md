@@ -1,24 +1,29 @@
 # awesome-english-ebooks RSS
 
-为 [hehonghui/awesome-english-ebooks](https://github.com/hehonghui/awesome-english-ebooks) 生成带 epub/mobi/pdf **直链**的 RSS 2.0 订阅源。
+为 [hehonghui/awesome-english-ebooks](https://github.com/hehonghui/awesome-english-ebooks) 生成按杂志分流的 RSS 订阅源。
 
-## 为什么需要这个
-
-GitHub 官方的 commit atom feed（`/commits/master.atom`）只包含 commit 标题，没有每期的下载链接。本仓库通过 GitHub Actions 定时枚举源仓库文件树，生成每期一条、内含三种格式直链的 RSS feed，并部署到 GitHub Pages 供 RSS 阅读器订阅。
+每本杂志一个独立 RSS，feed 内每篇文章是一条 item，点开标题直接阅读正文（从 epub 提取），无需下载文件。
 
 ## 订阅地址
 
-部署后，在任意 RSS 阅读器（Feedly / Inoreader / NetNewsWire / Reeder 等）中添加：
+每本杂志一个订阅，按需添加到 RSS 阅读器（Feedly / Inoreader / NetNewsWire / Reeder 等）：
 
+| 杂志 | 订阅 URL |
+|---|---|
+| 经济学人 | `https://zyipeng.github.io/awesome-english-ebooks-rss/feeds/economist.xml` |
+| 纽约客 | `https://zyipeng.github.io/awesome-english-ebooks-rss/feeds/new_yorker.xml` |
+| 大西洋月刊 | `https://zyipeng.github.io/awesome-english-ebooks-rss/feeds/atlantic.xml` |
+| 连线 | `https://zyipeng.github.io/awesome-english-ebooks-rss/feeds/wired.xml` |
+
+阅读器里的结构：
 ```
-https://<你的GitHub用户名>.github.io/<仓库名>/feed.xml
+经济学人 文章更新
+  ├─ When a president stops pretending that voters count, democracy...
+  │   └─ 点开 → 文章正文
+  ├─ Donald Trump's Saudi deal risks nuclear proliferation
+  │   └─ 点开 → 文章正文
+  └─ ...（每篇文章一条）
 ```
-
-每条更新形如：
-
-- 标题：`经济学人 The Economist te_2026.07.25`
-- 正文：列出该期 epub / mobi / pdf 三个直链（点击即下载）
-- 同时带 `<enclosure>`，支持在阅读器内直接下载 epub
 
 ## 文件结构
 
@@ -30,34 +35,33 @@ requirements.txt            # 无第三方依赖
 
 ## 工作原理
 
-1. GitHub Actions 每天 UTC 06:00 / 18:00 触发（也可手动 `workflow_dispatch`）
-2. 脚本调用 GitHub **Git Tree API**（`recursive=1`）一次性拉取源仓库整棵文件树
-3. 过滤出 `01_economist` / `02_new_yorker` / `04_atlantic` / `05_wired` 目录下的 `.epub/.mobi/.pdf` 文件
-4. 按"期"分组，合并所有杂志，按期号日期降序生成 RSS 2.0 feed
+1. GitHub Actions 每天 UTC 06:00 / 18:00 触发
+2. 脚本调用 Git Tree API 拉取源仓库整棵文件树，定位各杂志每期 epub
+3. 对每期 epub：下载 → 解压 → 按 spine 顺序识别单篇文章（跳过广告/封面/目录页）→ 清洗正文 HTML
+4. 每篇文章生成一条 RSS item，按杂志归档输出独立 feed 到 `feeds/<magazine>.xml`
 5. 部署到 GitHub Pages
 
-**为何用 Git Tree API 而非 Contents API**：单次调用拿到全部路径（718+ 文件），避免逐目录枚举导致的 API 限流。在 Actions 中用自动注入的 `GITHUB_TOKEN`，限额 5000/小时，绰绰有余。
+文章识别规则：spine 项中有 `<h1>` 标题且纯文字 >300 字的视为文章，其余视为目录/分隔页跳过。
 
 ## 配置
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `PER_MAGAZINE_LIMIT` | `20` | 每本杂志最多保留最近多少期 |
+| `PER_MAGAZINE_LIMIT` | `2` | 每本杂志保留最近多少期 |
+| `ARTICLE_MAX_CHARS` | `15000` | 单篇文章正文截断到多少字符 |
 
-如需增减杂志，编辑 [generate_feed.py](generate_feed.py) 顶部的 `MAGAZINES` 字典。
+编辑 [generate_feed.py](generate_feed.py) 顶部的 `MAGAZINES` 字典可增减杂志。
 
 ## 本地运行
 
 ```bash
-# 可选：设置 token 提高 API 限额（不设也能跑，但易限流）
-export GITHUB_TOKEN=ghp_xxx
-
-python3 generate_feed.py feed.xml
+export GITHUB_TOKEN=ghp_xxx   # 可选，提高 API 限额
+python3 generate_feed.py feeds
 ```
 
-## 首次部署步骤
+## 首次部署
 
-1. 在 GitHub 新建一个空仓库（public，否则 Pages 需 Pro）
-2. 把本目录文件推上去
+1. 在 GitHub 新建一个 public 空仓库
+2. 推送本目录文件
 3. 仓库 Settings → Pages → Source 选 **GitHub Actions**
-4. 手动触发一次 Actions（Run workflow），完成后即得到订阅 URL
+4. 手动触发一次 Actions，完成后得到上面四个订阅 URL

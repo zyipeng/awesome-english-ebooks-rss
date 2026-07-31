@@ -31,17 +31,17 @@ jobs:
         env:
           # Actions 自动注入的 token，提高 GitHub API 限额到 5000/小时
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # 每本杂志保留最近 2 期（每期下载并解压 epub 提取正文，期数越多 feed 越大）
+          # 每本杂志保留最近 2 期（每期下载并解压 epub 提取文章）
           PER_MAGAZINE_LIMIT: "2"
-          # 单期正文截断到 30000 字符
-          MAX_CONTENT_CHARS: "30000"
-        run: python generate_feed.py feed.xml
+          # 单篇文章正文截断到 15000 字符
+          ARTICLE_MAX_CHARS: "15000"
+        run: python generate_feed.py feeds
 
       - name: Upload feed artifact
         uses: actions/upload-artifact@v4
         with:
-          name: feed
-          path: feed.xml
+          name: feeds
+          path: feeds/
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -58,6 +58,9 @@ jobs:
       - name: Print feed URL
         run: |
           echo "========================================"
-          echo "RSS 订阅地址（在 RSS 阅读器中添加此 URL）："
-          echo "  https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/feed.xml"
+          echo "RSS 订阅地址（每本杂志一个独立订阅，在 RSS 阅读器中按需添加）："
+          echo "  经济学人  https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/feeds/economist.xml"
+          echo "  纽约客    https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/feeds/new_yorker.xml"
+          echo "  大西洋    https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/feeds/atlantic.xml"
+          echo "  连线      https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/feeds/wired.xml"
           echo "========================================"
