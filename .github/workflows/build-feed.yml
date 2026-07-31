@@ -31,7 +31,10 @@ jobs:
         env:
           # Actions 自动注入的 token，提高 GitHub API 限额到 5000/小时
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PER_MAGAZINE_LIMIT: "20"
+          # 每本杂志保留最近 2 期（每期下载并解压 epub 提取正文，期数越多 feed 越大）
+          PER_MAGAZINE_LIMIT: "2"
+          # 单期正文截断到 30000 字符
+          MAX_CONTENT_CHARS: "30000"
         run: python generate_feed.py feed.xml
 
       - name: Upload feed artifact
