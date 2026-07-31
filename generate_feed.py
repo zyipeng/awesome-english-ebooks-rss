@@ -40,11 +40,12 @@ RAW_BASE = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}"
 # Git Tree API：recursive=1 递归拉取整棵树
 TREE_API = f"https://api.github.com/repos/{REPO}/git/trees/{BRANCH}?recursive=1"
 FEED_TITLE = "awesome-english-ebooks 外刊更新"
-FEED_DESC = "经济学人、纽约客、大西洋月刊、连线等英语外刊杂志更新（epub/mobi/pdf）"
+FEED_DESC = "经济学人、纽约客、大西洋月刊、连线等英语外刊杂志更新（epub，点击标题直接打开）"
 FEED_LINK = "https://github.com/" + REPO
 
 DATE_RE = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})")
-VALID_EXT = (".epub", ".mobi", ".pdf")
+# 只保留 epub：点击标题即打开杂志
+VALID_EXT = (".epub",)
 
 
 def api_get_tree():
@@ -108,23 +109,16 @@ def collect_issues(paths):
 
 
 def build_item(mag_dir, mag_name, issue_name, dt, files):
-    """构造单条 RSS item。每期一条，描述里列出三种格式直链。"""
+    """构造单条 RSS item。每期一条，点击标题即打开 epub。"""
     title = "%s %s" % (mag_name, issue_name)
-    link = "https://github.com/%s/tree/%s/%s/%s" % (REPO, BRANCH, mag_dir, issue_name)
+    # link 指向 epub 直链，阅读器里点标题即可打开/下载杂志
+    epub_url = files[0][1] if files else ""
     pub_date = format_datetime(dt.astimezone(timezone.utc))
+    desc = "%s 第 %s 期 epub" % (escape(mag_name), escape(issue_name))
 
-    lines = ["<p>%s 第 %s 期，共 %d 个文件：</p><ul>" % (escape(mag_name), escape(issue_name), len(files))]
-    for fname, url in files:
-        ext = os.path.splitext(fname)[1].lstrip(".").upper()
-        lines.append('<li><a href="%s">%s (%s)</a></li>' % (escape(url), escape(fname), ext))
-    lines.append("</ul>")
-
-    # enclosure 用第一个文件（通常是 epub），便于支持 enclosure 的阅读器显示下载
     enclosure = ""
     if files:
-        fname, url = files[0]
-        enclosure = '<enclosure url="%s" type="application/%s" length="0" />' % (
-            escape(url), os.path.splitext(fname)[1].lstrip("."))
+        enclosure = '<enclosure url="%s" type="application/epub" length="0" />' % escape(epub_url)
 
     return """
     <item>
@@ -132,13 +126,13 @@ def build_item(mag_dir, mag_name, issue_name, dt, files):
       <link>%s</link>
       <guid isPermaLink="false">%s/%s/%s</guid>
       <pubDate>%s</pubDate>
-      <description><![CDATA[%s]]></description>
+      <description>%s</description>
       %s
     </item>""" % (
-        escape(title), escape(link),
+        escape(title), escape(epub_url),
         mag_dir, issue_name, BRANCH,
         pub_date,
-        "".join(lines),
+        desc,
         enclosure,
     )
 
@@ -179,9 +173,6 @@ def main():
         for issue_name, (dt, files) in sorted_issues[:PER_MAGAZINE_LIMIT]:
             if not files:
                 continue
-            # 按格式排序：epub, mobi, pdf
-            order = {".epub": 0, ".mobi": 1, ".pdf": 2}
-            files.sort(key=lambda x: order.get(os.path.splitext(x[0])[1].lower(), 9))
             all_items.append((dt, build_item(mag_dir, mag_name, issue_name, dt, files)))
 
     # 所有杂志混排，按期号日期降序
