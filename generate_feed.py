@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-为 hehonghui/awesome-english-ebooks 生成带 epub/mobi/pdf 直链的 RSS 2.0 订阅源。
+为 hehonghui/awesome-english-ebooks 生成 RSS 2.0 订阅源。
+
+每期杂志一条 item，正文（description）直接内嵌从 epub 提取的文章 HTML，
+在 RSS 阅读器里点开标题即可阅读正文，无需下载文件。
 
 工作原理：
-1. 通过 GitHub Git Tree API 一次性拉取整棵文件树（递归）
-2. 过滤出各杂志目录下的 .epub/.mobi/.pdf 文件
-3. 按"期"分组，合并所有杂志，按期号日期降序生成单个 RSS 2.0 feed
+1. GitHub Git Tree API 一次性拉取整棵文件树
+2. 过滤各杂志目录下的 .epub 文件
+3. 对每期 epub：下载 -> 解压 -> 按 spine 顺序提取正文 HTML -> 去图片/广告页 -> 截断
+4. 把正文塞进 RSS description，按期号日期降序生成 feed
 
-依赖：仅标准库。GITHUB_TOKEN 环境变量可选（有则提高 API 限额到 5000/小时）。
-单次 tree API 调用即可拿到全部路径，几乎不会触发限流。
+依赖：仅标准库。GITHUB_TOKEN 可选（提高 API 限额）。
 """
 
+import io
 import os
 import re
 import sys
 import json
+import zipfile
 import urllib.request
 import urllib.error
 from collections import defaultdict
@@ -26,25 +31,23 @@ from xml.sax.saxutils import escape
 # ---- 配置 ----
 REPO = "hehonghui/awesome-english-ebooks"
 BRANCH = "master"
-# 杂志目录 -> 杂志中文名（用于 feed 标题展示）
 MAGAZINES = {
     "01_economist": "经济学人 The Economist",
     "02_new_yorker": "纽约客 The New Yorker",
     "04_atlantic": "大西洋月刊 The Atlantic",
     "05_wired": "连线 Wired",
 }
-# 每个杂志最多保留最近多少期（控制 feed 体积）
-PER_MAGAZINE_LIMIT = int(os.environ.get("PER_MAGAZINE_LIMIT", "20"))
-# 直链使用 raw.githubusercontent.com（对大文件最稳定）
+# 每个杂志保留最近多少期（每期会下载并解压一本 epub，期数越多 feed 越大、构建越慢）
+PER_MAGAZINE_LIMIT = int(os.environ.get("PER_MAGAZINE_LIMIT", "2"))
+# 单期正文 HTML 截断到多少字符（控制单条体积；整本全文会让 feed 过大被阅读器拒收）
+MAX_CONTENT_CHARS = int(os.environ.get("MAX_CONTENT_CHARS", "30000"))
 RAW_BASE = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}"
-# Git Tree API：recursive=1 递归拉取整棵树
 TREE_API = f"https://api.github.com/repos/{REPO}/git/trees/{BRANCH}?recursive=1"
 FEED_TITLE = "awesome-english-ebooks 外刊更新"
-FEED_DESC = "经济学人、纽约客、大西洋月刊、连线等英语外刊杂志更新（epub，点击标题直接打开）"
+FEED_DESC = "经济学人、纽约客、大西洋月刊、连线等英语外刊杂志更新（点开标题直接阅读正文）"
 FEED_LINK = "https://github.com/" + REPO
 
 DATE_RE = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})")
-# 只保留 epub：点击标题即打开杂志
 VALID_EXT = (".epub",)
 
 
@@ -108,16 +111,102 @@ def collect_issues(paths):
     return issues
 
 
+def download_epub(url):
+    """下载 epub，返回 bytes。失败返回 None。"""
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", "awesome-english-ebooks-rss-generator")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.read()
+    except Exception as e:
+        sys.stderr.write("   下载 epub 失败: %s\n" % e)
+        return None
+
+
+def extract_epub_html(epub_bytes, max_chars):
+    """
+    解压 epub，按 spine 顺序提取正文 HTML。
+    - 跳过广告页（含 ad_h1/ad_div/ereader.link 特征）
+    - 去掉 script/style/img（图片相对路径在 RSS 里失效）
+    - 去掉内部 .html 跳转链接的 href（保留文字）
+    - 按段落边界截断到 max_chars
+    """
+    z = zipfile.ZipFile(io.BytesIO(epub_bytes))
+    container = z.read("META-INF/container.xml").decode("utf-8", "ignore")
+    opf_path = re.search(r'full-path="([^"]+)"', container).group(1)
+    opf = z.read(opf_path).decode("utf-8", "ignore")
+    opf_dir = opf_path.rsplit("/", 1)[0] + "/" if "/" in opf_path else ""
+
+    # manifest: id -> href（兼容属性顺序）
+    manifest = {}
+    for m in re.finditer(r"<item\b([^>]*?)/?>", opf):
+        attrs = m.group(1)
+        idm = re.search(r'id="([^"]+)"', attrs)
+        hrem = re.search(r'href="([^"]+)"', attrs)
+        if idm and hrem:
+            manifest[idm.group(1)] = hrem.group(1)
+    spine_ids = re.findall(r'<itemref[^>]*idref="([^"]+)"', opf)
+
+    parts = []
+    total = 0
+    for sid in spine_ids:
+        href = manifest.get(sid)
+        if not href:
+            continue
+        path = (opf_dir + href) if not href.startswith("/") else href[1:]
+        try:
+            html = z.read(path).decode("utf-8", "ignore")
+        except KeyError:
+            continue
+        # 跳过广告页
+        if "ad_h1" in html or "ad_div" in html or "ereader.link" in html:
+            continue
+        bm = re.search(r"<body[^>]*>(.*?)</body>", html, re.S)
+        body = bm.group(1) if bm else html
+        # 清洗：去 script/style/img；去掉内部 .html 跳转 href
+        body = re.sub(r"<script\b.*?</script>", "", body, flags=re.S)
+        body = re.sub(r"<style\b.*?</style>", "", body, flags=re.S)
+        body = re.sub(r"<img[^>]*/?>", "", body)
+        body = re.sub(r'href="[^"]*\.html[^"]*"', "", body)
+        parts.append(body)
+        total += len(body)
+        if total >= max_chars:
+            break
+
+    merged = "".join(parts)
+    if len(merged) > max_chars:
+        cut = merged.rfind("</p>", 0, max_chars)
+        if cut < max_chars * 0.5:
+            cut = max_chars
+        merged = merged[:cut + 4] + "<p>…（正文已截断，完整内容请下载 epub）</p>"
+    return merged
+
+
 def build_item(mag_dir, mag_name, issue_name, dt, files):
-    """构造单条 RSS item。每期一条，点击标题即打开 epub。"""
+    """构造单条 RSS item。下载 epub 提取正文塞进 description，点开标题即可阅读。"""
     title = "%s %s" % (mag_name, issue_name)
-    # link 指向 epub 直链，阅读器里点标题即可打开/下载杂志
     epub_url = files[0][1] if files else ""
     pub_date = format_datetime(dt.astimezone(timezone.utc))
-    desc = "%s 第 %s 期 epub" % (escape(mag_name), escape(issue_name))
+
+    # 下载 epub 并提取正文
+    body_html = ""
+    if epub_url:
+        sys.stderr.write("   下载并提取 %s ...\n" % issue_name)
+        data = download_epub(epub_url)
+        if data:
+            try:
+                body_html = extract_epub_html(data, MAX_CONTENT_CHARS)
+            except Exception as e:
+                sys.stderr.write("   提取正文失败: %s\n" % e)
+
+    if body_html:
+        desc = "<p>%s 第 %s 期正文：</p>" % (escape(mag_name), escape(issue_name)) + body_html
+    else:
+        desc = "<p>%s 第 %s 期（正文提取失败，<a href=\"%s\">点此下载 epub</a>）</p>" % (
+            escape(mag_name), escape(issue_name), escape(epub_url))
 
     enclosure = ""
-    if files:
+    if epub_url:
         enclosure = '<enclosure url="%s" type="application/epub" length="0" />' % escape(epub_url)
 
     return """
@@ -126,7 +215,7 @@ def build_item(mag_dir, mag_name, issue_name, dt, files):
       <link>%s</link>
       <guid isPermaLink="false">%s/%s/%s</guid>
       <pubDate>%s</pubDate>
-      <description>%s</description>
+      <description><![CDATA[%s]]></description>
       %s
     </item>""" % (
         escape(title), escape(epub_url),
