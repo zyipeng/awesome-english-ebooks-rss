@@ -1,0 +1,60 @@
+name: Build RSS Feed
+
+on:
+  schedule:
+    # 每天 UTC 06:00 和 18:00 各跑一次（北京 14:00 / 02:00）
+    # 杂志一般在周五/周六更新，每天两次足够及时
+    - cron: "0 6,18 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Generate feed
+        env:
+          # Actions 自动注入的 token，提高 GitHub API 限额到 5000/小时
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PER_MAGAZINE_LIMIT: "20"
+        run: python generate_feed.py feed.xml
+
+      - name: Upload feed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: feed
+          path: feed.xml
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Print feed URL
+        run: |
+          echo "========================================"
+          echo "RSS 订阅地址（在 RSS 阅读器中添加此 URL）："
+          echo "  https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/feed.xml"
+          echo "========================================"
