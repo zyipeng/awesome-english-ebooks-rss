@@ -23,7 +23,7 @@ import zipfile
 import urllib.request
 import urllib.error
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from email.utils import format_datetime
 from xml.sax.saxutils import escape
 
@@ -184,6 +184,34 @@ def extract_articles(epub_bytes):
         body = re.sub(r"<img[^>]*/?>", "", body)
         body = re.sub(r'href="[^"]*\.html[^"]*"', "", body)
 
+        # 去掉正文里第一个 h1（它已作为 RSS item 标题，避免重复）
+        body = re.sub(r"<h1\b[^>]*>.*?</h1>", "", body, count=1, flags=re.S)
+
+        # 板块名（te_section_title / ny_section_title 等）→ 灰色小字标签
+        body = re.sub(
+            r'<span class="[^"]*section_title[^"]*">(.*?)</span>',
+            r'<span style="color:#888;font-size:12px;text-transform:uppercase;letter-spacing:1px">\1</span>',
+            body, flags=re.S)
+
+        # 副标题/导语（te_article_rubric 等 h3）→ 斜体深灰，区别于正文
+        body = re.sub(
+            r'<h3 class="[^"]*rubric[^"]*">(.*?)</h3>',
+            r'<p style="color:#555;font-style:italic;font-size:15px;margin:8px 0">\1</p>',
+            body, flags=re.S)
+
+        # 副标题片段（te_fly_span 等）→ 灰色小字
+        body = re.sub(
+            r'<span class="[^"]*fly_span[^"]*">(.*?)</span>',
+            r'<span style="color:#999;font-size:13px">\1</span>',
+            body, flags=re.S)
+
+        # 去掉发表日期行（冗余，与期号重复）
+        body = re.sub(r'<h3 class="[^"]*datePublished[^"]*">.*?</h3>', "", body, flags=re.S)
+        # 去掉多余分隔线
+        body = re.sub(r"<hr\s*/?>", "", body)
+        # 去掉开头的空段落
+        body = re.sub(r"(<p>\s*</p>)+", "", body)
+
         # 截断到段落边界
         if len(body) > ARTICLE_MAX_CHARS:
             cut = body.rfind("</p>", 0, ARTICLE_MAX_CHARS)
@@ -196,8 +224,10 @@ def extract_articles(epub_bytes):
 
 
 def build_article_item(mag_name, issue_name, dt, seq, title, body):
-    """单篇文章一条 RSS item。"""
-    pub_date = format_datetime(dt.astimezone(timezone.utc))
+    """单篇文章一条 RSS item。pubDate 按 seq 递减秒数，保证阅读器按日期降序时保持杂志顺序。"""
+    # 第 0 篇用期号日期，后续每篇晚 1 秒，确保排序稳定（最新在上 = spine 顺序）
+    pub_dt = dt - timedelta(seconds=seq)
+    pub_date = format_datetime(pub_dt.astimezone(timezone.utc))
     guid = "%s/%d/%s" % (issue_name, seq, BRANCH)
     desc = "<p>%s · %s</p>%s" % (escape(mag_name), escape(issue_name), body)
     return """
